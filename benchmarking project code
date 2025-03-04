@@ -1,0 +1,343 @@
+################################################################
+###simple_simulated_data.fasta
+#all of the commands for the 3 softwares are aiming to look for the specific motifs i inputted into 4 different DNA sequences. 
+#the input is the same for all 3
+#this file has 1 sequence with all 4 motifs in different places
+################################################################
+#true motifs: +MA0108.1, +MA0466.1, +MA0609.1, +MA0080.4
+# +MA0080.4(SPI1): AAAAAGCGGAAGT
+# +MA0108.1(TBP): TATAAAAG
+# +MA0466.1(CEBPB, Basic leucine zipper factors (bZIP)): ATTCGACAAT
+# +MA0609.1(Crem, Basic leucine zipper factors (bZIP)): ATGACGTAA
+
+fimo -oc output_fimo_RANDOM_dna implanted_motifs.meme simple_simulated_data.fasta  
+#found 3/4 of the motifs using reference 
+
+findMotifs.pl simple_simulated_data.fasta fasta output_HOMER_RANDOM_dna -find implanted_motifs.homer
+#found 3/4 (some false positives)
+
+gimme scan simple_simulated_data.fasta -B background_simple_motifs.fasta -p gimmeMotif_motifs.pfm -t > output_GIMME_RANDOM_dna.txt
+#found 4/4
+
+################################################################
+###simple_4_motifs_4_seqs.fasta
+#all of the compands for the 3 softwares are aiming to look for the specific motifs i inputted into 4 different DNA sequences. 
+#the sequences are the same, but each sequence has a different motif in a different location.
+#it has 4 motifs, 4 DNA sequences in this file
+#similar code to the previous, simpler one
+################################################################
+#true motifs: +MA0108.1, +MA0466.1, +MA0609.1, +MA0080.4
+# +MA0080.4: AAAAAGCGGAAGT
+# +MA0108.1: TATAAAAG
+# +MA0466.1: ATTCGACAAT
+# +MA0609.1: ATGACGTAA
+#MEME
+fimo -oc output_4_by_4_meme --bfile meme_background.txt implanted_motifs.meme simple_4_motifs_4_seqs.fasta
+#result: 3/4 motifs identified 
+
+#HOMER
+findMotifs.pl simple_4_motifs_4_seqs.fasta fasta output_4_by_4_homer -find implanted_motifs.homer -bg background_simple_motifs.fasta
+#found 4/4 motifs (look at positions maybe too many false positives)
+
+#GimmeMotifs
+gimme scan simple_4_motifs_4_seqs.fasta -B background_simple_motifs.fasta -p gimmeMotif_motifs.pfm -t > output_4_by_4_gimme.txt
+#all 4 motifs found in all 4 sequences
+
+
+
+################################################################
+#https://www.sciencedirect.com/science/article/pii/S2001037024001648?via%3Dihub#sec0125
+##ATAC-seq motif discovery dataset (Assay for Transposase-Accessible Chromatin using sequencing)
+#I wanted to use ATAC-seq data because it is similar to Chip-seq where the chromosomal regions are less bound here (open) so their may be motifs here for accessiblity for transposase-
+#https://www.ncbi.nlm.nih.gov/bioproject/PRJNA943245 (Transcription factor induction of vascular blood stem cell niches in vivo [ATAC-Seq 2] (zebrafish))
+#using real data to see if the software can identify the same TF motifs as the one in the paper
+#data downloaded from project as fastq files from SRAexplorer
+#https://pubmed.ncbi.nlm.nih.gov/37119815/
+#in the original paper they found ETS, SOX, NHR motifs. 
+#in the paper to prep their data they used fastq and cutadapt so im going to do the same 
+#need to do: Quality Control(FastQC), Trimming(cutadapt) (they used standard illumina + naextera primers), Alignment(Bowtie2), Peak Calling(MACS2), then finally Motif Discovery: using MEME, HOMER, and GimmeMotifs
+################################################################
+wget -i atac-seq_files.txt
+
+#fastqc 
+conda install bioconda::fastqc --solver classic
+#(base) acarcione@gauss:~$ fastqc --version
+#FastQC v0.11.8
+
+mkdir qc_reports
+fastqc -o qc_reports atac_seq_files/*.fastq.gz
+
+
+#trimming 
+#this is actually code i got from Dr.Burns 
+#This is a loop to trim all the reads in a folder and make a log file that contains all the outpot of the command. When/if this gets rerun, make sure to delete the log file before running (or it just adds things to it).
+#just realized the data are CONTAMINATED with Nextera Transposase sequence??!!! need to redo. this is why you check the FASTQC people
+# Illumina Hiseq 2500 data 
+
+#https://www.biostars.org/p/119774/#119791
+#https://support-docs.illumina.com/SHARE/AdapterSequences/Content/SHARE/AdapterSeq/Nextera/SequencesNextera_Illumina.htm
+
+for read1 in atac_seq_files/*_1.fastq.gz; do
+    read2=${read1/_1.fastq.gz/_2.fastq.gz}
+    out1=${read1/_1.fastq.gz/_1.trimmed_andCUT.fastq.gz}
+    out2=${read2/_2.fastq.gz/_2.trimmed_andCUT.fastq.gz}
+
+    cutadapt \
+        -u 15 \
+        -U 15 \
+        -a CTGTCTCTTATACACATCT \
+        -A CTGTCTCTTATACACATCT \
+        --minimum-length 59 \
+        -o $out1 \
+        -p $out2 \
+        $read1 $read2 | tee -a cutadapt.log.txt
+done
+
+# fastqc -o atac_seq_files atac_seq_files/SRR23802681_1.trimmed_andCUT.fastq.gz
+# fastqc -o atac_seq_files atac_seq_files/SRR23802681_2.trimmed_andCUT.fastq.gz
+
+#verify it removed it in reads 1 and 2
+#fastqc -o atac_seq_files atac_seq_files/SRR23802681_2.trimmed.fastq.gz
+
+#now all of them 
+fastqc -o atac_seq_files atac_seq_files/*trimmed_andCUT.fastq.gz
+#OMG IT WORKED YAYA
+
+#Alignment with Bowtie2: Genome from UCSC build of danRer7 (this is what they did in the paper too) 
+#https://hgdownload.soe.ucsc.edu/goldenPath/danRer7/bigZips/
+#the fact that they used danRer7 is so weird cause this paper came out in 2023... and we are on 11 
+conda config --set solver classic
+conda install -c bioconda bowtie2
+conda install bowtie2
+
+wget http://hgdownload.soe.ucsc.edu/goldenPath/danRer7/bigZips/danRer7.fa.gz
+gunzip /home/acarcione/danRer7.fa.gz
+bowtie2-build /home/acarcione/danRer7.fa /home/acarcione/danRer7
+
+zcat atac_seq_files/*_1.trimmed_andCUT.fastq.gz | head -n 100000 > subset_1.fastq
+zcat atac_seq_files/*_2.trimmed_andCUT.fastq.gz | head -n 100000 > subset_2.fastq
+
+zcat atac_seq_files/*_1.trimmed_andCUT.fastq.gz | head -n 500000 > subset_3.fastq
+zcat atac_seq_files/*_2.trimmed_andCUT.fastq.gz | head -n 100000 > subset_4.fastq
+
+zcat atac_seq_files/*_1.trimmed_andCUT.fastq.gz | head -n 1000000 > subset_5.fastq
+zcat atac_seq_files/*_2.trimmed_andCUT.fastq.gz | head -n 1000000 > subset_6.fastq
+
+bowtie2 -x /home/acarcione/danRer7 -1 subset_1.fastq -2 subset_2.fastq -S /home/acarcione/outputBOWTIE2_SUBSET_1_2.sam
+bowtie2 -x /home/acarcione/danRer7 -1 subset_3.fastq -2 subset_4.fastq -S /home/acarcione/outputBOWTIE2_SUBSET_3_4.sam
+bowtie2 -x /home/acarcione/danRer7 -1 subset_5.fastq -2 subset_6.fastq -S /home/acarcione/outputBOWTIE2_SUBSET_5_6.sam
+
+
+
+#bowtie2 -x /home/acarcione/danRer7 -1 atac_seq_files/*_1.trimmed_andCUT.fastq.gz -2 atac_seq_files/*_2.trimmed_andCUT.fastq.gz -S /home/acarcione/outputBOWTIE2_trim_cut.sam
+
+#ITS WORKING OMG its writing into my sam file! im going to leave it overnight, its taking a LOT of CPU (sorry everyone!)
+#ITS BEEN TAKING ALL FREAKING DAAAAAY. I think im goinf to terminate it early. It should be enough data
+#TERMINATED THE PROCESS WHEN SAM WAS AT 35G
+#ls -lh /home/acarcione/outputBOWTIE2_trim_cut.sam
+# watch -n 5 ls -lh /home/acarcione/outputBOWTIE2_trim_cut.sam
+# grep -v "^@" /home/acarcione/outputBOWTIE2_trim_cut.sam | wc -l
+
+
+samtools view -bS /home/acarcione/outputBOWTIE2_SUBSET_1_2.sam  > /home/acarcione/outputBOWTIE2_SUBSET_1_2.bam
+
+samtools sort /home/acarcione/outputBOWTIE2_SUBSET_1_2.bam -o /home/acarcione/outputBOWTIE2_SUBSET_1_2.sorted.bam
+samtools index /home/acarcione/outputBOWTIE2_SUBSET_1_2.sorted.bam
+
+# Peak Calling(MACS2)
+#                                                                                                    
+# To activate this environment, use                                                                  
+#                                                                                                    
+#     $ conda activate macs2_env                                                                     
+#                                                                                                    
+# To deactivate an active environment, use                                                           
+#                                                                                                    
+#     $ conda deactivate                                                                             
+
+#https://pypi.org/project/MACS2/                       
+mamba install -c bioconda macs2
+conda update --all
+
+
+conda install macs2
+
+macs2 --version
+
+
+#macs2 callpeak --input outputBOWTIE2_SUBSET.sorted.bam --output outputBOWTIE2_SUBSET.MASC2_results --genome danRer7 --method ATAC-seq
+#macs2 callpeak -t outputBOWTIE2_SUBSET.sorted.bam -n outputBOWTIE2_SUBSET.MACS2_results --genome danRer7 --method ATAC-seq
+
+#OMG IT FINALLY WORKED WITH THE SUBSET YAYAYYAYAYAYAAAAY
+macs2 callpeak -t /home/acarcione/outputBOWTIE2_SUBSET_1_2.sorted.bam -n outputBOWTIE2_SUBSET_1_2.MACS2_results -g 1500000000 --nomodel
+
+head outputBOWTIE2_SUBSET_1_2.MACS2_results_summits.bed 
+#results: /home/acarcione/outputBOWTIE2_SUBSET.MACS2_results_summits.bed
+
+###NOW FOR MOTIF PREDICTION!
+###################
+##extracting bed file into fasta 
+bedtools getfasta -fi /home/acarcione/danRer7.fa -bed /home/acarcione/outputBOWTIE2_SUBSET.MACS2_results_summits.bed -fo MASC2_results_summits_sequences.fa
+
+#MEME
+meme /home/acarcione/MASC2_results_summits_sequences.fa -oc /home/acarcione/MEME_ATAC_output
+
+#HOMER
+findMotifsGenome.pl /home/acarcione/outputBOWTIE2_SUBSET.MACS2_results_summits.bed  /home/acarcione/danRer7.fa /home/acarcione/ATAC_output_HOMER -mask
+#
+
+#GimmeMotifs
+gimme motifs /home/acarcione/MASC2_results_summits_sequences.fa ATAC_output_Gimme -g  /home/acarcione/danRer7.fa
+#
+
+
+################################################################
+##ChIP-seq motif discovery dataset
+#https://academic.oup.com/nar/article/43/W1/W39/2467905#supplementary-data
+#case 4 from the meme suite paper, going to do the same as they did :) 
+#They have everything i need in their supplementary but i need to upload it to here somehow...
+#TRUTH: GGG TCA TCG GGT TCA or AGGTCACAGAGGTCA
+################################################################
+curl -L -o gkv416_Supplementary_Data.zip "https://oup.silverchair-cdn.com/oup/backfile/Content_public/Journal/nar/43/W1/10.1093_nar_gkv416/2/gkv416_Supplementary_Data.zip?Expires=1736317153&Signature=fUUq1cAtp1luXiL9FvW6qLfS-YWHx5tQN6Ry1091HxvNW2vErt2LzptHT~MBzYXlSsfGWZSIBmkdpsW9h6pQpZc-8fb~Zq5UiFNSbVqTFpHglqmn1QkQcfaQSf2nA5doNNHHMdOe-MwPMt7wJZAmtDdKWbAKunNHVOWeYcUX9zPn~4L71A6B8EBWZ7pg-uLfrzcxnJ42cnplsHhRdXPPdRarbPFDTYH2cSdadHaSInudAtBk-9gYrtx4mkI0PhMWxfhxHWmeXewDt6eOLesyndMDDvfI~YMPMVGL5pzN77NK9ddJos4RzrgeADQ5LoVAw0UwCkfzpPhl-E4psECh-A__&Key-Pair-Id=APKAIE5G5CRDK6RD3PGA"gunzip /home/acarcione/ChIP_seq_Supplementary_Data.zip
+
+unzip /home/acarcione/MEME_Supplementary_Data.zip
+unzip /home/acarcione/nar-00283-web-b-2015-File005.zip
+#  files i need:  
+#   inflating: case4/Supplementary_Table_1.500bp.bed  
+#   inflating: case4/Supplementary_Table_1.500bp.fa  
+#   inflating: case4/Supplementary_Table_1.bed  
+#   inflating: case4/Supplementary_Table_1.xls  
+#in my own folder now: 
+#/home/acarcione/case4
+
+cat case4/Supplementary_Table_1.500bp.bed
+cat case4/Supplementary_Table_1.500bp.fa
+cat case4/Supplementary_Table_1.bed 
+cat case4/Supplementary_Table_1.xls
+
+awk '{printf("%s\t%d\t%d\n", $1, (($3 +$2) / 2) - 250, (($3 + $2) + 250))}' case4/Supplementary_Table_1.bed > case4/Supplementary_Table_1.500bp.bed
+
+#get Jaspar motifs in MEME format from https://jaspar.elixir.no/downloads/
+wget https://jaspar.elixir.no/download/data/2024/CORE/JASPAR2024_CORE_vertebrates_non-redundant_pfms_meme.txt -O Jaspar_vertebrates.meme
+
+wget http://thebrain.bwh.harvard.edu/uniprobe/downloads/All/All_PWMs.zip -O all_pwm.meme
+
+#need the mouse genome for HOMER and GimmeMotifs since the study was done on mice
+wget https://ftp.ensembl.org/pub/release-113/fasta/mus_musculus/dna/Mus_musculus.GRCm39.dna_sm.toplevel.fa.gz
+gunzip Mus_musculus.GRCm39.dna_sm.toplevel.fa.gz
+
+#MEME
+meme-chip -oc meme_chip_out_withPWM -db /home/acarcione/case4/Jaspar_vertebrates.meme -db /home/acarcione/case4/all_pwm.meme /home/acarcione/case4/Supplementary_Table_1.500bp.fa
+#found it!! but also found 10 others so not bad 1/11 
+
+#HOMER
+#did find VDR motif! but it also found SO MANY others sooooo?? I think this may be due to the fact it was looking at the whole mouse genome and all the HOMER motifs. at least it found it!
+makeLogo.pl /home/acarcione/results/motifs.motif > motif_logo.png
+findMotifsGenome.pl /home/acarcione/case4/Supplementary_Table_1_fixed.bed Mus_musculus.GRCm39.dna_sm.toplevel.fa ChIP_output_HOMER -len 15
+#doing de novo discovery
+findMotifs.pl /home/acarcione/case4/Supplementary_Table_1.500bp.fa fasta /home/acarcione/ChIP_output_HOMER
+#was able to find it out of 22 de novo! impressive 
+
+# Add name, score, and strand columns
+awk 'BEGIN {OFS="\t"} {print $1, $2, $3, "peak"NR, 1, "+"}' /home/acarcione/case4/Supplementary_Table_1.bed > /home/acarcione/case4/Supplementary_Table_1_fixed_BETTER.bed
+
+head /home/acarcione/case4/Supplementary_Table_1_fixed.bed
+changeNewLine.pl "/home/acarcione/ChIP_output_HOMER/target.clean..pos"
+
+#GimmeMotifs
+gimme motifs /home/acarcione/case4/Supplementary_Table_1.500bp.fa ChIP_output_Gimme -g  Mus_musculus.GRCm39.dna_sm.toplevel.fa
+#gimmemotifs is elite! uses 3 different tools Bioprospector, meme, and HOMER, so...
+#takes way longer and calculates standard deviation?
+#IT IDENTIFIED VDR 1/2! WOW 
+#https://gimmemotifs.readthedocs.io/en/master/reference.html
+################################################################
+#benchmarking runtime on #4
+time meme-chip -oc meme_chip_out_withPWM -db /home/acarcione/case4/Jaspar_vertebrates.meme -db /home/acarcione/case4/all_pwm.meme /home/acarcione/case4/Supplementary_Table_1.500bp.fa
+time gimme motifs /home/acarcione/case4/Supplementary_Table_1.500bp.fa ChIP_output_Gimme -g  Mus_musculus.GRCm39.dna_sm.toplevel.fa
+time findMotifs.pl /home/acarcione/case4/Supplementary_Table_1.500bp.fa fasta /home/acarcione/ChIP_output_HOMER
+
+#benchmarking memory on #4
+/usr/bin/time --verbose 
+/usr/bin/time --verbose  meme-chip -oc meme_chip_out_withPWM -db /home/acarcione/case4/Jaspar_vertebrates.meme -db /home/acarcione/case4/all_pwm.meme /home/acarcione/case4/Supplementary_Table_1.500bp.fa
+/usr/bin/time --verbose  gimme motifs /home/acarcione/case4/Supplementary_Table_1.500bp.fa ChIP_output_Gimme -g  Mus_musculus.GRCm39.dna_sm.toplevel.fa
+/usr/bin/time --verbose  findMotifs.pl /home/acarcione/case4/Supplementary_Table_1.500bp.fa fasta /home/acarcione/ChIP_output_HOMER
+
+
+#MEME
+#   User time (seconds): 1219.12
+#         System time (seconds): 1.89
+#         Percent of CPU this job got: 99%
+#         Elapsed (wall clock) time (h:mm:ss or m:ss): 20:22.91
+#         Average shared text size (kbytes): 0
+#         Average unshared data size (kbytes): 0
+#         Average stack size (kbytes): 0
+#         Average total size (kbytes): 0
+#         Maximum resident set size (kbytes): 315648
+#         Average resident set size (kbytes): 0
+#         Major (requiring I/O) page faults: 72
+#         Minor (reclaiming a frame) page faults: 694755
+#         Voluntary context switches: 360
+#         Involuntary context switches: 1315
+#         Swaps: 0
+#         File system inputs: 90520
+#         File system outputs: 13896
+#         Socket messages sent: 0
+#         Socket messages received: 0
+#         Signals delivered: 0
+#         Page size (bytes): 4096
+#         Exit status: 0
+
+
+# #GimmeMotifs
+# 2024-12-06 03:16:31,141 - INFO - gimme motifs final report: ChIP_output_Gimme/gimme.motifs.html
+#         Command being timed: "gimme motifs /home/acarcione/case4/Supplementary_Table_1.500bp.fa ChIP_output_Gimme -g Mus_musculus.GRCm39.dna_sm.toplevel.fa"
+#         User time (seconds): 9656.17
+#         System time (seconds): 625.25
+#         Percent of CPU this job got: 294%
+#         Elapsed (wall clock) time (h:mm:ss or m:ss): 58:13.31
+#         Average shared text size (kbytes): 0
+#         Average unshared data size (kbytes): 0
+#         Average stack size (kbytes): 0
+#         Average total size (kbytes): 0
+#         Maximum resident set size (kbytes): 5356256
+#         Average resident set size (kbytes): 0
+#         Major (requiring I/O) page faults: 3833
+#         Minor (reclaiming a frame) page faults: 108172650
+#         Voluntary context switches: 3343985
+#         Involuntary context switches: 48722
+#         Swaps: 0
+#         File system inputs: 60784
+#         File system outputs: 1104008
+#         Socket messages sent: 0
+#         Socket messages received: 0
+#         Signals delivered: 0
+#         Page size (bytes): 4096
+#         Exit status: 0
+
+
+#Homer
+# User time (seconds): 1488.65
+#         System time (seconds): 5.87
+#         Percent of CPU this job got: 99%
+#         Elapsed (wall clock) time (h:mm:ss or m:ss): 24:56.17
+#         Average shared text size (kbytes): 0
+#         Average unshared data size (kbytes): 0
+#         Average stack size (kbytes): 0
+#         Average total size (kbytes): 0
+#         Maximum resident set size (kbytes): 885876
+#         Average resident set size (kbytes): 0
+#         Major (requiring I/O) page faults: 0
+#         Minor (reclaiming a frame) page faults: 2953421
+#         Voluntary context switches: 2545
+#         Involuntary context switches: 3131
+#         Swaps: 0
+#         File system inputs: 24
+#         File system outputs: 128440
+#         Socket messages sent: 0
+#         Socket messages received: 0
+#         Signals delivered: 0
+#         Page size (bytes): 4096
+#         Exit status: 0
+
+#benchmarking runtime on #3
+#benchmarking memory on #3
+# Run HOMER with debugging
